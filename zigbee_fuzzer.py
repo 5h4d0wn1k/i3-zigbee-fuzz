@@ -10,6 +10,8 @@ import sys
 import time
 import os
 import hashlib
+import json
+import argparse
 from collections import defaultdict, Counter
 from typing import List, Tuple, Optional, Dict
 
@@ -300,8 +302,10 @@ class MutationEngine:
             "type_confusion": cls.type_confusion,
         }
         method = methods.get(strategy, cls.random_payload)
-        if strategy == "random_payload" or strategy == "format_string":
+        if strategy == "random_payload":
             result = method()
+        elif strategy == "format_string":
+            result = method(data)
         elif strategy == "type_confusion":
             result = method(data, random.randint(0x10, 0x2B))
         else:
@@ -390,9 +394,11 @@ class CrashDetector:
 class ZigbeeZclFuzzer:
     """Main Zigbee ZCL attribute fuzzer."""
 
-    def __init__(self, target_short: int = 0x0000, target_ext: int = 0x0000000000000000):
+    def __init__(self, target_short: int = 0x0000, target_ext: int = 0x0000000000000000,
+                 seed: Optional[int] = None):
         self.target_short = target_short
         self.target_ext = target_ext
+        self.seed = seed
         self.frame_builder = ZclFrame()
         self.mutator = MutationEngine()
         self.crash_detector = CrashDetector()
@@ -472,7 +478,11 @@ class ZigbeeZclFuzzer:
                 results["discoveries"] += 1
         return results
 
-    def fuzz_all_clusters(self, iterations_per: int = 20) -> dict:
+    def fuzz_all_clusters(self, iterations_per: int = 20, seed: Optional[int] = None) -> dict:
+        if seed is not None:
+            random.seed(seed)
+        elif self.seed is not None:
+            random.seed(self.seed)
         print(f"\n{'='*60}")
         print(f"  I3 - Zigbee ZCL Attribute Fuzzer")
         print(f"  Target: short={hex(self.target_short)}, ext={hex(self.target_ext)}")
@@ -533,20 +543,46 @@ class ZigbeeZclFuzzer:
         return resp_header + bytes(payload)
 
 
-def main():
-    if len(sys.argv) < 2:
-        print("Usage: python3 zigbee_fuzzer.py <short_addr_hex> [ext_addr_hex] [iterations]")
-        print("  Zigbee ZCL attribute fuzzer for security testing.")
-        print("  Examples:")
-        print("    python3 zigbee_fuzzer.py 0x1234")
-        print("    python3 zigbee_fuzzer.py 0x1234 0x0011223344556677 50")
-        sys.exit(1)
-    short_addr = int(sys.argv[1], 16) if sys.argv[1].startswith("0x") else int(sys.argv[1])
-    ext_addr = int(sys.argv[2], 16) if len(sys.argv) > 2 else 0
-    iterations = int(sys.argv[3]) if len(sys.argv) > 3 else 20
-    fuzzer = ZigbeeZclFuzzer(target_short=short_addr, target_ext=ext_addr)
-    results = fuzzer.fuzz_all_clusters(iterations_per=iterations)
-    return results
+def run_demo(report_dir: str = "reports", seed: int = 42) -> int:
+    """Offline demo: seeded ZCL fuzz sweep, JSON report written. Exit 0."""
+    os.makedirs(report_dir, exist_ok=True)
+    fuzzer = ZigbeeZclFuzzer(target_short=0x1234, target_ext=0x0011223344556677)
+    results = fuzzer.fuzz_all_clusters(iterations_per=3, seed=seed)
+    report = os.path.join(report_dir, "i3_demo_report.json")
+    with open(report, "w") as f:
+        json.dump(results, f, indent=2, default=str)
+    print(f"[*] JSON report written: {report}")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="zigbee_fuzzer",
+        description="I3 — Zigbee ZCL attribute fuzzer (frame build, mutation, crash detection).")
+    parser.add_argument("--short-addr", type=lambda v: int(v, 0), default=0x1234,
+                        help="target short address (hex)")
+    parser.add_argument("--ext-addr", type=lambda v: int(v, 0), default=0x0011223344556677,
+                        help="target extended address (hex)")
+    parser.add_argument("--iterations", type=int, default=3, help="iterations per cluster")
+    parser.add_argument("--seed", type=int, default=42, help="RNG seed for deterministic sweeps")
+    parser.add_argument("--json", action="store_true", help="write JSON report to reports/")
+    parser.add_argument("--report-dir", default="reports", help="report dir (default: reports)")
+    parser.add_argument("--demo", action="store_true", help="run seeded offline demo and exit")
+    args = parser.parse_args()
+
+    if args.demo:
+        return run_demo(args.report_dir, args.seed)
+
+    fuzzer = ZigbeeZclFuzzer(target_short=args.short_addr, target_ext=args.ext_addr, seed=args.seed)
+    results = fuzzer.fuzz_all_clusters(iterations_per=args.iterations, seed=args.seed)
+
+    if args.json:
+        os.makedirs(args.report_dir, exist_ok=True)
+        report = os.path.join(args.report_dir, "i3_report.json")
+        with open(report, "w") as f:
+            json.dump(results, f, indent=2, default=str)
+        print(f"[*] JSON report written: {report}")
+    return 0
 
 
 if __name__ == "__main__":

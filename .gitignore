@@ -1,4 +1,6 @@
 __pycache__/
 *.pyc
 *.pyo
+reports/
 .DS_Store
+Thumbs.db
